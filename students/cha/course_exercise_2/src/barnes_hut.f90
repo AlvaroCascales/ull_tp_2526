@@ -1,8 +1,9 @@
-module barnes_hut_module_serial
+module barnes_hut_module
 
     use iso_fortran_env, only: real64
     use geometry
     use particle
+    !$ use omp_lib
     implicit none
     private
 
@@ -122,6 +123,11 @@ contains
         integer :: i
         type(vector3d) :: f_total   ! temporary vector accumulating all forces acting on i
 
+        !====== PARALELLISATION ======
+        !$omp parallel do default(none) &
+        !$omp shared(ax, ay, az, particles, n_particles, head) &
+        !$omp private(i, f_total) &
+        !$omp schedule(dynamic)
         do i = 1, n_particles
             f_total = vector3d(0.0_real64, 0.0_real64, 0.0_real64)  ! before starting for a new particle
                                                                     ! clear the accumulator
@@ -133,6 +139,7 @@ contains
             ay(i) = f_total%y / particles(i)%m
             az(i) = f_total%z / particles(i)%m
         end do
+        !$omp end parallel do
 
     end subroutine barnes_hut_calculate_forces
 
@@ -143,18 +150,13 @@ contains
     ! TREE MANAGEMENT (CREATE/MODIFY/DESTROY CELLS)
     !=============================================================
 
-    ! ------ place_cell ------
+        ! ------ place_cell ------
     ! decides what to do when attempting to insert a particle into a specific 'goal' cell
 
     recursive subroutine place_cell(goal, part, n)
         type(cell), pointer :: goal, temp
         type(point3d), intent(in) :: part
         integer, intent(in) :: n
-
-        ! temporary variables in case the cell was already occupied (type = 1)
-        type(point3d) :: old_part_coord
-        integer :: old_part_idx
-        type(cell), pointer :: temp_old
 
         select case (goal%type)  ! placement depends on the current case
 
@@ -164,23 +166,25 @@ contains
             goal%pos = n       ! and its index
 
         case (1)  ! "leaf" case that already had a particle inside
-            ! first, copy information of the particle already here into temporary variables
-            old_part_coord = goal%part
-            old_part_idx = goal%pos
             
-            call create_subcells(goal) ! split the cell into 8 empty children (goal goes from type 1 to type 2)
-                                      ! the 'create_subcells' routine is defined below
+            ! split the cell into 8 children.
+            ! IMPORTANT: 'create_subcells' automatically moves the existing (old) 
+            ! particle into the correct child. We don't need to do it manually
+            call create_subcells(goal) 
             
-            ! re-insert both old and new particles into their corresponding child
-            ! using 'find_cell' to determine the correct child
-            call find_cell(goal, temp_old, old_part_coord)            ! find destination for old particle
-            call find_cell(goal, temp, part)                          ! find destination for new particle
-            call place_cell(temp_old, old_part_coord, old_part_idx)   ! insert old particle
-            call place_cell(temp, part, n)                            ! insert new particle
+            ! 2. Now we just insert the NEW particle into the correct child.
+            call find_cell(goal, temp, part)          ! find destination for new particle
+            call place_cell(temp, part, n)            ! insert new particle
         
+        case (2) ! "branch" case (already split)
+             ! if we land here directly (rare but possible via recursion), just pass it down
+             call find_cell(goal, temp, part)
+             call place_cell(temp, part, n)
+
         end select
 
     end subroutine place_cell
+
 
 
     ! ------ create_subcells ------
@@ -386,6 +390,7 @@ contains
         real(real64) :: d, r2, r3, size_box
         type(vector3d) :: rji, force_temp
         integer :: i, j, k
+        real(real64), parameter :: epsilon = 0.01_real64  ! softening length
 
         select case (tree%type)
 
@@ -395,18 +400,15 @@ contains
 
                 ! [GEOMETRY]: we use 'distance2' to calculate r^2 between points
                 r2 = distance2(particles(tree%pos)%p, particles(goal)%p)
-
-                ! small softening to avoid numerical blow-ups
-                if (r2 > 1.0e-10_real64) then
                     
-                    rji = particles(tree%pos)%p - particles(goal)%p
-                    
-                    r3 = r2 * sqrt(r2)
+                rji = particles(tree%pos)%p - particles(goal)%p
+                
+                r3 = (r2 + epsilon**2) * sqrt(r2 + epsilon**2)   ! small softening to avoid numerical blow-ups
 
-                    !we calculte the force F = (m1*m2 * r_vec) / r^3
-                    force_temp = (particles(tree%pos)%m * particles(goal)%m * rji) / r3
-                    force_accum = force_accum + force_temp   ! and we sum up every force contribution to the particle
-                end if
+                !we calculte the force F = (m1*m2 * r_vec) / r^3_softened
+                force_temp = (particles(tree%pos)%m * particles(goal)%m * rji) / r3
+                force_accum = force_accum + force_temp   ! and we sum up every force contribution to the particle
+                
             end if
 
         case (2)  ! branch case (multiple particles)
@@ -593,5 +595,5 @@ contains
     end function belongs
 
     
-end module barnes_hut_module_serial
+end module barnes_hut_module
 
