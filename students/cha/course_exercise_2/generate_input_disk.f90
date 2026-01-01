@@ -103,6 +103,3 @@ program generate_input_disk
   deallocate(pos_x, pos_y, pos_z, vel_x, vel_y, vel_z, radius, angle)
 
 end program generate_input_disk
-
-
-

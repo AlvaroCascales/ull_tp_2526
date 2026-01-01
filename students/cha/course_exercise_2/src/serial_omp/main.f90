@@ -1,4 +1,4 @@
-program barnes_hut_simulation
+program main
 
     use iso_fortran_env, only: real64
     use geometry
@@ -173,7 +173,4 @@ program barnes_hut_simulation
     print*, ""
 
 
-end program barnes_hut_simulation
-
-
-
+end program main
